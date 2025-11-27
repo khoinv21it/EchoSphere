@@ -1,0 +1,9 @@
+discord.py
+python-dotenv
+yt_dlp
+PyNaCl
+aiohttp
+mutagen
+pytube
+setuptools
+wheel
