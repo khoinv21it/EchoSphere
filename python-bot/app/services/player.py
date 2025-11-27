@@ -1,10 +1,13 @@
 import asyncio
-import yt_dlp
 from dataclasses import dataclass
 from typing import Optional, List
+import os
+import contextlib
 
-YTDL_OPTS = {'format': 'bestaudio/best', 'quiet': True, 'skip_download': True}
-YTDL = yt_dlp.YoutubeDL(YTDL_OPTS)
+# Use the shared YTDL instance configured in app.utils.ytdl to ensure
+# extractor_args and a silent logger are applied (avoids EJS warnings).
+from app.utils.ytdl import YTDL
+
 
 @dataclass
 class Track:
@@ -38,9 +41,19 @@ class Queue:
         random.shuffle(self.tracks)
 
 
+# Helper to call YTDL.extract_info while redirecting stdout/stderr to devnull
+def _extract_info_silent(arg, download=False):
+    try:
+        with open(os.devnull, 'w') as devnull:
+            with contextlib.redirect_stderr(devnull), contextlib.redirect_stdout(devnull):
+                return YTDL.extract_info(arg, download=download)
+    except Exception:
+        return YTDL.extract_info(arg, download=download)
+
+
 async def ytdl_search(query: str, max_results: int = 5):
     q = f"ytsearch{max_results}:{query}"
     loop = asyncio.get_event_loop()
-    info = await loop.run_in_executor(None, lambda: YTDL.extract_info(q, download=False))
+    info = await loop.run_in_executor(None, _extract_info_silent, q, False)
     entries = info.get('entries', []) if isinstance(info, dict) else []
     return [Track(title=e.get('title'), url=e.get('webpage_url'), duration=int(e.get('duration') or 0), thumbnail=e.get('thumbnail')) for e in entries]

@@ -11,3 +11,13 @@
 *.swp
 /note
 .venv/
+
+# Python bytecode
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
+# Virtual envs
+venv/
+ENV/
+env/

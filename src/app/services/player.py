@@ -4,6 +4,7 @@ from typing import Optional, List
 import discord
 from app.utils.ytdl import YTDL
 import os
+import contextlib
 
 YTDL_OPTS = {'format': 'bestaudio/best', 'quiet': True, 'skip_download': True}
 # YTDL is created in app.utils.ytdl
@@ -15,6 +16,7 @@ class Track:
     duration: int = 0
     requested_by: Optional[str] = None
     thumbnail: Optional[str] = None
+    source_id: Optional[str] = None
 
 class Queue:
     def __init__(self):
@@ -28,6 +30,10 @@ class Queue:
     def dequeue(self) -> Optional[Track]:
         if not self.tracks: return None
         return self.tracks.pop(0)
+
+    def pop_last(self) -> Optional[Track]:
+        if not self.tracks: return None
+        return self.tracks.pop()
 
     def remove_at(self, idx: int) -> Optional[Track]:
         if idx < 0 or idx >= len(self.tracks): return None
@@ -49,18 +55,29 @@ class Queue:
         return self.tracks.copy()
 
 
+# Helper to call YTDL.extract_info while redirecting stdout/stderr to devnull
+def _extract_info_silent(arg, download=False):
+    try:
+        with open(os.devnull, 'w') as devnull:
+            with contextlib.redirect_stderr(devnull), contextlib.redirect_stdout(devnull):
+                return YTDL.extract_info(arg, download=download)
+    except Exception:
+        # fallback to normal call (let exceptions propagate to caller)
+        return YTDL.extract_info(arg, download=download)
+
+
 async def ytdl_search(query: str, max_results: int = 5) -> List[Track]:
     loop = asyncio.get_event_loop()
     q = f"ytsearch{max_results}:{query}"
-    info = await loop.run_in_executor(None, lambda: YTDL.extract_info(q, download=False))
+    info = await loop.run_in_executor(None, _extract_info_silent, q, False)
     entries = info.get('entries', []) if isinstance(info, dict) else []
-    return [Track(title=e.get('title'), url=e.get('webpage_url'), duration=int(e.get('duration') or 0), thumbnail=e.get('thumbnail')) for e in entries]
+    return [Track(title=e.get('title'), url=e.get('webpage_url'), duration=int(e.get('duration') or 0), thumbnail=e.get('thumbnail'), source_id=e.get('id')) for e in entries]
 
 
 async def ytdl_info(url: str) -> Optional[dict]:
     loop = asyncio.get_event_loop()
     try:
-        info = await loop.run_in_executor(None, lambda: YTDL.extract_info(url, download=False))
+        info = await loop.run_in_executor(None, _extract_info_silent, url, False)
         return info
     except Exception:
         return None
@@ -90,6 +107,13 @@ async def play_next(bot: discord.Client, state, guild_id: int, ffmpeg_options: O
         return
 
     state.current_track = nxt
+
+    # push previous into history
+    try:
+        if getattr(state, 'history', None) is not None and prev is not None:
+            state.history.insert(0, prev)
+    except Exception:
+        pass
 
     info = await ytdl_info(nxt.url)
     if not info:
@@ -126,6 +150,27 @@ async def play_next(bot: discord.Client, state, guild_id: int, ffmpeg_options: O
     ffmpeg_executable = os.getenv('FFMPEG_EXECUTABLE') or os.getenv('FFMPEG_PATH')
 
     try:
+        # Ensure voice client is connected before attempting to play (avoid "Not connected to voice.")
+        # Wait briefly for handshake if needed
+        for _ in range(20):
+            try:
+                if getattr(state.voice_client, 'is_connected', lambda: False)():
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(0.1)
+
+        if not getattr(state.voice_client, 'is_connected', lambda: False)():
+            print('play error: voice client not connected after wait')
+            # try to inform channel
+            if hasattr(state, 'last_text_channel') and state.last_text_channel:
+                try:
+                    await state.last_text_channel.send('Audio playback failed: voice client not connected yet. Please try again in a moment.')
+                except Exception:
+                    pass
+            state.current_track = None
+            return
+
         if ffmpeg_executable:
             source = discord.FFmpegPCMAudio(url_to_play, executable=ffmpeg_executable, **ffmpeg_options)
         else:
@@ -135,6 +180,14 @@ async def play_next(bot: discord.Client, state, guild_id: int, ffmpeg_options: O
             state.voice_client.stop()
         # make 'after' callback call on_track_end with state
         state.voice_client.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(on_track_end(bot, state, e), bot.loop))
+
+        # update now playing message (import at runtime to avoid circular imports)
+        try:
+            from app.services.session import update_now_playing_message
+            await update_now_playing_message(bot, state)
+        except Exception as e:
+            print('failed to update now playing message', e)
+
         # Update now playing should be scheduled elsewhere
     except discord.errors.ClientException as e:
         # Common cause: ffmpeg not found; inform channel and log
@@ -148,6 +201,15 @@ async def play_next(bot: discord.Client, state, guild_id: int, ffmpeg_options: O
                     pass
             else:
                 print('ffmpeg was not found; set FFMPEG_EXECUTABLE or add ffmpeg to PATH')
+            state.current_track = None
+            return
+        # handle not connected error by notifying and returning
+        if 'not connected' in msg.lower():
+            if hasattr(state, 'last_text_channel') and state.last_text_channel:
+                try:
+                    await state.last_text_channel.send('Audio playback failed: voice client not connected.')
+                except Exception:
+                    pass
             state.current_track = None
             return
         state.current_track = None

@@ -1,6 +1,4 @@
-import discord
 from discord.ext import commands
-from app.services.player import Queue
 
 class QueueCommand(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -13,9 +11,18 @@ class QueueCommand(commands.Cog):
         from app.services.session import guild_states
         state = guild_states.get(ctx.guild.id)
         if not state or state.queue.length==0:
-            return await ctx.reply('Queue is empty')
+            try:
+                # previously reacted with 🔁; now send a short ephemeral reply instead
+                return await ctx.reply('Queue is empty')
+            except Exception:
+                return await ctx.reply('Queue is empty')
         lines = [f"{i+1}. {t.title} — {t.requested_by or 'Unknown'}" for i,t in enumerate(state.queue.list)]
-        await ctx.reply('\n'.join(lines[:30]))
+        # send ephemeral-style queue via DM? keep simple: send unique message to channel
+        try:
+            from app.utils.discord.helpers import send_unique
+            await send_unique(ctx.channel, embed=None, content='\n'.join(lines[:30]))
+        except Exception:
+            await ctx.reply('\n'.join(lines[:30]))
 
 
 async def setup(bot: commands.Bot):

@@ -11,9 +11,15 @@ class SkipCommand(commands.Cog):
         from app.services.session import ensure_guild_state
         state = await ensure_guild_state(ctx.guild)
         if not state or not state.voice_client:
-            return await ctx.reply('Nothing to skip')
+            try:
+                return await ctx.reply('Nothing to skip')
+            except Exception:
+                return await ctx.reply('Nothing to skip')
         state.voice_client.stop()
-        await ctx.reply('Skipped')
+        try:
+            await ctx.message.add_reaction('⏭️')
+        except Exception:
+            await ctx.reply('Skipped')
 
     @app_commands.command(name='skip', description='Skip the current track')
     async def slash_skip(self, interaction: discord.Interaction):

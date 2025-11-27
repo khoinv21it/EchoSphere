@@ -3,6 +3,57 @@ from dataclasses import dataclass
 import discord
 from app.services.player import Queue
 
+
+class NowPlayingControls(discord.ui.View):
+    def __init__(self, bot, state):
+        super().__init__(timeout=None)
+        self.bot = bot
+        self.state = state
+
+    @discord.ui.button(label='⏯️', style=discord.ButtonStyle.primary)
+    async def play_pause(self, interaction: discord.Interaction, button: discord.ui.Button):
+        state = self.state
+        if not state or not state.voice_client:
+            return await interaction.response.send_message('Not connected', ephemeral=True)
+        if state.voice_client.is_playing():
+            state.voice_client.pause()
+            await interaction.response.send_message('Paused', ephemeral=True)
+        else:
+            state.voice_client.resume()
+            await interaction.response.send_message('Resumed', ephemeral=True)
+
+    @discord.ui.button(label='⏭️', style=discord.ButtonStyle.secondary)
+    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        state = self.state
+        if not state or not state.voice_client:
+            return await interaction.response.send_message('Not connected', ephemeral=True)
+        try:
+            # stop current track; player.on_track_end/play_next will handle next
+            state.voice_client.stop()
+            # call play_next to advance immediately
+            try:
+                from app.services.player import play_next
+                await play_next(self.bot, state, interaction.guild.id)
+            except Exception as e:
+                print('skip -> play_next failed', e)
+            await interaction.response.send_message('Skipped', ephemeral=True)
+        except Exception:
+            await interaction.response.send_message('Failed to skip', ephemeral=True)
+
+    @discord.ui.button(label='⏹️', style=discord.ButtonStyle.danger)
+    async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
+        state = self.state
+        if not state or not state.voice_client:
+            return await interaction.response.send_message('Not connected', ephemeral=True)
+        try:
+            state.voice_client.stop()
+            state.queue.clear()
+            state.current_track = None
+            await interaction.response.send_message('Stopped and cleared queue', ephemeral=True)
+        except Exception:
+            await interaction.response.send_message('Failed to stop', ephemeral=True)
+
+
 @dataclass
 class GuildState:
     queue: Queue
@@ -13,6 +64,7 @@ class GuildState:
     pagination_page = 0
     pending_searches = None
     last_text_channel = None
+    history = None
 
 
 # global map
@@ -24,6 +76,7 @@ async def ensure_guild_state(guild: discord.Guild, create=True):
         st = GuildState(queue=Queue())
         st.pending_searches = {}
         st.last_text_channel = None
+        st.history = []
         guild_states[guild.id] = st
     return st
 
@@ -100,36 +153,47 @@ async def connect_voice(state: GuildState, channel: discord.VoiceChannel):
         raise
 
 
-async def update_now_playing_message(state: GuildState):
+async def update_now_playing_message(bot, state: GuildState):
     try:
-        if not state.now_playing_message:
-            if not state.last_text_channel: return
-            track = state.current_track
-            if not track: return
-            embed = discord.Embed(title='Now Playing', description=f'**{track.title}**', color=0x1DB954)
-            embed.add_field(name='Requested By', value=track.requested_by or 'Unknown', inline=True)
-            embed.add_field(name='Duration', value=f'{track.duration}s', inline=True)
-            if track.thumbnail: embed.set_thumbnail(url=track.thumbnail)
-            try:
-                state.now_playing_message = await state.last_text_channel.send(embed=embed)
-            except Exception as e:
-                print('Failed to send now playing message', e)
-            return
-        # update existing message
         track = state.current_track
         if not track:
+            # if no track, clear existing message
+            if state.now_playing_message:
+                try:
+                    await state.now_playing_message.delete()
+                except Exception:
+                    pass
+                state.now_playing_message = None
+            return
+
+        # Always send a fresh now-playing message for each track change so users
+        # clearly see the new controls and embed (avoid confusing edits/duplicates).
+        # Delete the previous message if present.
+        if state.now_playing_message:
             try:
-                await state.now_playing_message.edit(content='No track', embed=None)
+                await state.now_playing_message.delete()
             except Exception:
                 pass
+            state.now_playing_message = None
+
+        if not state.last_text_channel:
             return
+
         embed = discord.Embed(title='Now Playing', description=f'**{track.title}**', color=0x1DB954)
         embed.add_field(name='Requested By', value=track.requested_by or 'Unknown', inline=True)
         embed.add_field(name='Duration', value=f'{track.duration}s', inline=True)
         if track.thumbnail: embed.set_thumbnail(url=track.thumbnail)
         try:
-            await state.now_playing_message.edit(embed=embed)
-        except Exception:
-            pass
+            # attach interactive controls
+            view = NowPlayingControls(bot, state)
+            state.now_playing_message = await state.last_text_channel.send(embed=embed, view=view)
+        except Exception as e:
+            print('Failed to send now playing message', e)
+            # fallback: use send_unique to avoid duplicate messages
+            try:
+                from app.utils.discord.helpers import send_unique
+                state.now_playing_message = await send_unique(state.last_text_channel, embed=embed)
+            except Exception:
+                pass
     except Exception as ex:
         print('update now playing failed', ex)

@@ -5,6 +5,7 @@ import yt_dlp
 YTDL_OPTS = {
     'format': 'bestaudio/best',
     'quiet': True,
+    'no_warnings': True,
     'skip_download': True,
     'extractor_args': {
         'youtube': {
@@ -13,4 +14,15 @@ YTDL_OPTS = {
     }
 }
 
-YTDL = yt_dlp.YoutubeDL(YTDL_OPTS)
+class _SilentLogger:
+    def debug(self, msg):
+        return
+    def warning(self, msg):
+        # swallow yt-dlp warnings
+        return
+    def error(self, msg):
+        # still print errors to console
+        print(msg)
+
+# Use a silent logger so yt-dlp warnings don't spam the bot logs.
+YTDL = yt_dlp.YoutubeDL({**YTDL_OPTS, 'logger': _SilentLogger()})

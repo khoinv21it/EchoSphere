@@ -1,4 +1,3 @@
-import discord
 from discord.ext import commands
 from app.services.session import ensure_guild_state, connect_voice
 from app.services.player import ytdl_info, Track as TrackClass, play_next
@@ -24,6 +23,23 @@ class PlaylistCommand(commands.Cog):
         if not state.current_track:
             await play_next(self.bot, state, ctx.guild.id)
         await ctx.reply(f'Enqueued {count} tracks from playlist')
+
+    @commands.command(name='playlist')
+    async def playlist_cmd(self, ctx: commands.Context, *, name: str = None):
+        from app.services.session import ensure_guild_state
+        state = await ensure_guild_state(ctx.guild)
+        # placeholder: just show queue
+        if not state or state.queue.length==0:
+            try:
+                return await ctx.reply('No playlist or queue is empty')
+            except Exception:
+                return await ctx.reply('No playlist or queue is empty')
+        lines = [f"{i+1}. {t.title} — {t.requested_by or 'Unknown'}" for i,t in enumerate(state.queue.list)]
+        try:
+            from app.utils.discord.helpers import send_unique
+            await send_unique(ctx.channel, content='\n'.join(lines[:50]))
+        except Exception:
+            await ctx.reply('\n'.join(lines[:50]))
 
 
 async def setup(bot: commands.Bot):
